@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+
+import rospy
+import cv2
+import numpy as np
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+from std_msgs.msg import Header
+
+class LaneFollower:
+    def __init__(self):
+        # Initialize ROS node
+        rospy.init_node('lane_follower_node', anonymous=True)
+        
+        # Initialize CvBridge to convert ROS image messages to OpenCV format
+        self.bridge = CvBridge()
+
+        # Subscriber to the camera feed
+        self.image_sub = rospy.Subscriber('/camera/image_raw', Image, self.image_callback)
+
+        # Publisher to output processed image
+        self.image_pub = rospy.Publisher('/camera/image_processed', Image, queue_size=1)
+
+        rospy.loginfo("Lane follower node initialized")
+
+    def image_callback(self, msg):
+        # Convert ROS Image message to OpenCV format
+        cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        
+        # Step 1: Crop the image (adjust coordinates as necessary)
+        height, width, _ = cv_image.shape
+        crop_img = cv_image[int(height*0.5):, :]  # Crop to the bottom half (road area)
+        
+        # Step 2: Convert to HSV
+        hsv_img = cv2.cvtColor(crop_img, cv2.COLOR_BGR2HSV)
+        
+        # Step 3: Apply White Color Filter
+        lower_white = np.array([0, 0, 200])
+        upper_white = np.array([255, 50, 255])
+        white_mask = cv2.inRange(hsv_img, lower_white, upper_white)
+        white_filtered = cv2.bitwise_and(crop_img, crop_img, mask=white_mask)
+        
+        # Step 4: Apply Yellow Color Filter
+        lower_yellow = np.array([20, 100, 100])
+        upper_yellow = np.array([40, 255, 255])
+        yellow_mask = cv2.inRange(hsv_img, lower_yellow, upper_yellow)
+        yellow_filtered = cv2.bitwise_and(crop_img, crop_img, mask=yellow_mask)
+        
+        # Step 5: Apply Canny Edge Detector
+        edges = cv2.Canny(cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY), 50, 150)
+        
+        # Step 6: Apply Hough Transform for White Lines
+        white_lines = cv2.HoughLinesP(white_mask, 1, np.pi / 180, threshold=50, minLineLength=100, maxLineGap=10)
+        if white_lines is not None:
+            for line in white_lines:
+                x1, y1, x2, y2 = line[0]
+                cv2.line(crop_img, (x1, y1), (x2, y2), (0, 0, 255), 3)
+        
+        # Step 7: Apply Hough Transform for Yellow Lines
+        yellow_lines = cv2.HoughLinesP(yellow_mask, 1, np.pi / 180, threshold=50, minLineLength=100, maxLineGap=10)
+        if yellow_lines is not None:
+            for line in yellow_lines:
+                x1, y1, x2, y2 = line[0]
+                cv2.line(crop_img, (x1, y1), (x2, y2), (0, 255, 255), 3)
+        
+        # Step 8: Convert the processed image back to RGB
+        processed_image = cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB)
+
+        # Publish the processed image
+        try:
+            self.image_pub.publish(self.bridge.cv2_to_imgmsg(processed_image, "rgb8"))
+        except Exception as e:
+            rospy.logerr("Failed to publish processed image: %s", str(e))
+
+    def run(self):
+        rospy.spin()
+
+if __name__ == '__main__':
+    try:
+        lane_follower = LaneFollower()
+        rospy.loginfo("Lane follower node is running.")
+        lane_follower.run()
+    except rospy.ROSInterruptException:
+        pass
